@@ -46,6 +46,16 @@ def create_session_object_configuration(
             f"Conversation mode (OpenAI standard): using {conversation_model} for conversation, {final_transcription_model} for transcription"
         )
 
+    turn_detection = None
+    if intent != "transcription":
+        turn_detection = TurnDetection(
+            type="server_vad",
+            threshold=0.9,
+            prefix_padding_ms=0,
+            silence_duration_ms=550,
+            create_response=True,
+        )
+
     return Session(
         id=generate_session_id(),
         model=conversation_model,
@@ -59,13 +69,7 @@ def create_session_object_configuration(
             model=final_transcription_model,
             language=language,  # auto-detect language when None
         ),
-        turn_detection=TurnDetection(
-            type="server_vad",
-            threshold=0.9,
-            prefix_padding_ms=0,
-            silence_duration_ms=550,
-            create_response=intent != "transcription",
-        ),
+        turn_detection=turn_detection,
         temperature=0.8,
         tools=[],
         tool_choice="auto",

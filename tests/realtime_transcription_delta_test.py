@@ -9,7 +9,7 @@ import pytest
 
 from speaches.realtime.context import SessionContext
 from speaches.realtime.input_audio_buffer_event_router import commit_and_transcribe
-from speaches.realtime.partial_transcription import RealtimePartialTranscriptionWorker
+from speaches.realtime.partial_transcription import RealtimePartialTranscriptionWorker, trim_timed_transcript_before
 from speaches.realtime.pubsub import EventPubSub
 from speaches.realtime.session import create_session_object_configuration
 from speaches.realtime.stabilizer import RealtimeTranscriptStabilizer
@@ -61,7 +61,7 @@ async def wait_for_calls(transcriber: FakeAudioSnapshotTranscriber, count: int) 
         transcriber.calls_changed.clear()
 
 
-def timed_transcript(text: str, word_duration: float = 0.01) -> TimedTranscript:
+def timed_transcript(text: str, word_duration: float = 0.1) -> TimedTranscript:
     return TimedTranscript(
         text=text,
         words=tuple(
@@ -118,6 +118,17 @@ def test_stabilizer_keeps_current_right_edge_unconfirmed() -> None:
     assert delta.text == "thank you"
 
 
+def test_stabilizer_prompt_context_uses_last_confirmed_words() -> None:
+    stabilizer = RealtimeTranscriptStabilizer()
+    words = [f"word{i}" for i in range(205)]
+
+    stabilizer.observe(timed_transcript(" ".join(words)))
+    delta = stabilizer.observe(timed_transcript(" ".join([*words, "tail"])))
+
+    assert delta is not None
+    assert stabilizer.prompt_context == " ".join(f"word{i}" for i in range(5, 205))
+
+
 def test_stabilizer_emits_only_new_stable_word_prefixes() -> None:
     stabilizer = RealtimeTranscriptStabilizer()
 
@@ -126,12 +137,36 @@ def test_stabilizer_emits_only_new_stable_word_prefixes() -> None:
     second_delta = stabilizer.observe(timed_transcript("the front fell off"))
     assert second_delta is not None
     assert second_delta.text == "the front fell"
-    assert second_delta.confirmed_until_seconds == pytest.approx(0.03)
+    assert second_delta.confirmed_until_seconds == pytest.approx(0.3)
 
     third_delta = stabilizer.observe(timed_transcript("off again"))
     assert third_delta is not None
     assert third_delta.text == " off"
-    assert third_delta.confirmed_until_seconds == pytest.approx(0.01)
+    assert third_delta.confirmed_until_seconds == pytest.approx(0.1)
+
+
+def test_transcription_only_sessions_do_not_enable_server_vad() -> None:
+    session = create_session_object_configuration("test-model", intent="transcription")
+
+    assert session.turn_detection is None
+
+
+def test_partial_snapshot_trim_tolerates_timestamp_drift_near_confirmed_boundary() -> None:
+    hypothesis = TimedTranscript(
+        text="the front fell off",
+        words=(
+            TimedWord(word="the", start=0.0, end=0.2),
+            TimedWord(word="front", start=0.2, end=0.48),
+            TimedWord(word="fell", start=0.49, end=0.75),
+            TimedWord(word="off", start=0.75, end=1.0),
+        ),
+    )
+
+    trimmed = trim_timed_transcript_before(hypothesis, 0.5)
+
+    assert [word.word for word in trimmed.words] == ["fell", "off"]
+    assert trimmed.words[0].start == pytest.approx(0.0)
+    assert trimmed.text == "fell off"
 
 
 @pytest.mark.asyncio
@@ -246,7 +281,43 @@ async def test_partial_worker_drops_short_silence_hallucination() -> None:
 
 
 @pytest.mark.asyncio
-async def test_partial_worker_advances_audio_window_and_uses_prompt_context() -> None:
+async def test_partial_worker_does_not_erase_existing_text_with_hallucination() -> None:
+    pubsub = EventPubSub()
+    subscriber = pubsub.subscribe()
+    session = create_session_object_configuration("test-model", intent="transcription")
+    transcriber = FakeAudioSnapshotTranscriber("the front fell", "thank you")
+    input_audio_buffer = SessionContext(
+        transcription_client=MagicMock(),
+        completion_client=MagicMock(),
+        executor_registry=MagicMock(),
+        vad_model_manager=MagicMock(),
+        session=session,
+    ).audio_buffers.current
+    input_audio_buffer.append(np.ones(1600, dtype=np.float32))
+
+    worker = RealtimePartialTranscriptionWorker(
+        pubsub=pubsub,
+        transcriber=transcriber,
+        input_audio_buffer=input_audio_buffer,
+        session=session,
+        min_duration_ms=1,
+        interval_seconds=0.01,
+    )
+    worker.start()
+    await wait_for_calls(transcriber, 1)
+    first_event = await asyncio.wait_for(subscriber.get(), timeout=1)
+    input_audio_buffer.append(np.ones(800, dtype=np.float32))
+    await wait_for_calls(transcriber, 2)
+    await asyncio.sleep(0.03)
+    await worker.stop()
+
+    assert isinstance(first_event, ConversationItemInputAudioTranscriptionHypothesisEvent)
+    assert first_event.transcript == "the front fell"
+    assert subscriber.empty()
+
+
+@pytest.mark.asyncio
+async def test_partial_worker_uses_overlap_and_prompt_context_after_confirmation() -> None:
     pubsub = EventPubSub()
     session = create_session_object_configuration("test-model", intent="transcription")
     transcriber = FakeAudioSnapshotTranscriber("the front fell", "the front fell off", "off again")
@@ -278,7 +349,7 @@ async def test_partial_worker_advances_audio_window_and_uses_prompt_context() ->
     assert transcriber.calls == [
         (800, "test-model", None),
         (1600, "test-model", None),
-        (1920, "test-model", None),
+        (2400, "test-model", None),
     ]
     assert transcriber.prompts == [None, None, "the front fell"]
 

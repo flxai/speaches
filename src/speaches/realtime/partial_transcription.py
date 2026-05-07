@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 REALTIME_PARTIAL_MIN_DURATION_MS = 1500
 REALTIME_PARTIAL_INTERVAL_SECONDS = 0.5
-REALTIME_PARTIAL_HALLUCINATION_MAX_DURATION_MS = 3000
+REALTIME_CONFIRMED_AUDIO_OVERLAP_SECONDS = 1.0
 SILENCE_HALLUCINATION_PHRASES = {
     "hello",
     "hi",
@@ -38,6 +38,7 @@ SILENCE_HALLUCINATION_PHRASES = {
     "thanks",
     "thanks for watching",
     "thank you for watching",
+    "teksting av nicolai winther",
     "you",
 }
 
@@ -99,11 +100,24 @@ class RealtimePartialTranscriptionWorker:
             if self.input_audio_buffer.size == self._last_submitted_size:
                 continue
 
-            snapshot = self.input_audio_buffer.data[self._confirmed_samples :].copy()
+            overlap_samples = int(REALTIME_CONFIRMED_AUDIO_OVERLAP_SECONDS * SAMPLE_RATE)
+            snapshot_start_samples = max(0, self._confirmed_samples - overlap_samples)
+            ignore_before_seconds = (self._confirmed_samples - snapshot_start_samples) / SAMPLE_RATE
+            snapshot = self.input_audio_buffer.data[snapshot_start_samples:].copy()
             self._last_submitted_size = self.input_audio_buffer.size
-            await self._transcribe_snapshot(snapshot)
+            await self._transcribe_snapshot(
+                snapshot,
+                ignore_before_seconds=ignore_before_seconds,
+                unconfirmed_duration_ms=unconfirmed_samples // MS_SAMPLE_RATE,
+            )
 
-    async def _transcribe_snapshot(self, snapshot: np.typing.NDArray[np.float32]) -> None:
+    async def _transcribe_snapshot(
+        self,
+        snapshot: np.typing.NDArray[np.float32],
+        *,
+        ignore_before_seconds: float = 0.0,
+        unconfirmed_duration_ms: int | None = None,
+    ) -> None:
         try:
             hypothesis = await self.transcriber.transcribe_timed(
                 snapshot,
@@ -117,8 +131,10 @@ class RealtimePartialTranscriptionWorker:
             logger.exception("Realtime partial transcription failed")
             return
 
-        if should_drop_partial_hypothesis(hypothesis, snapshot_duration_ms(snapshot)):
-            self._publish_hypothesis(provisional="")
+        hypothesis = trim_timed_transcript_before(hypothesis, ignore_before_seconds)
+        duration_ms = unconfirmed_duration_ms if unconfirmed_duration_ms is not None else snapshot_duration_ms(snapshot)
+
+        if should_drop_partial_hypothesis(hypothesis, duration_ms):
             return
 
         confirmed_until_seconds = 0.0
@@ -191,16 +207,33 @@ def words_after(words: tuple[TimedWord, ...], offset_seconds: float) -> tuple[Ti
     return tuple(word for word in words if word.end > offset_seconds + TIMESTAMP_EPSILON_SECONDS)
 
 
+def trim_timed_transcript_before(hypothesis: TimedTranscript, offset_seconds: float) -> TimedTranscript:
+    if offset_seconds <= TIMESTAMP_EPSILON_SECONDS:
+        return hypothesis
+
+    from speaches.realtime.transcription_protocol import TimedTranscript, TimedWord
+
+    words = tuple(
+        TimedWord(
+            word=word.word,
+            start=max(0.0, word.start - offset_seconds),
+            end=max(0.0, word.end - offset_seconds),
+        )
+        for word in hypothesis.words
+        if word.end > offset_seconds + TIMESTAMP_EPSILON_SECONDS
+    )
+    return TimedTranscript(text=format_words(words), words=words)
+
+
 def snapshot_duration_ms(snapshot: np.typing.NDArray[np.float32]) -> int:
     return len(snapshot) // MS_SAMPLE_RATE
 
 
-def should_drop_partial_hypothesis(hypothesis: TimedTranscript, duration_ms: int) -> bool:
+def should_drop_partial_hypothesis(hypothesis: TimedTranscript, _duration_ms: int) -> bool:
     if not hypothesis.words:
         return True
-    if duration_ms > REALTIME_PARTIAL_HALLUCINATION_MAX_DURATION_MS:
-        return False
-    return normalized_phrase(hypothesis.text) in SILENCE_HALLUCINATION_PHRASES
+    phrase = normalized_phrase(hypothesis.text)
+    return phrase in SILENCE_HALLUCINATION_PHRASES
 
 
 def normalized_phrase(text: str) -> str:

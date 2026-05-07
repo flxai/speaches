@@ -10,8 +10,8 @@ if TYPE_CHECKING:
     from speaches.realtime.transcription_protocol import TimedTranscript, TimedWord
 
 WORD_BOUNDARY_CHARS = " \t\r\n.,!?;:"
-PROMPT_CONTEXT_CHARS = 200
-TIMESTAMP_EPSILON_SECONDS = 1e-6
+PROMPT_CONTEXT_WORDS = 200
+TIMESTAMP_EPSILON_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,8 @@ class RealtimeTranscriptStabilizer:
     def prompt_context(self) -> str | None:
         if not self._committed:
             return None
-        return self._committed[-PROMPT_CONTEXT_CHARS:]
+        words = self._committed.split()
+        return " ".join(words[-PROMPT_CONTEXT_WORDS:])
 
     def observe(self, hypothesis: TimedTranscript) -> RealtimeTranscriptDelta | None:
         current_words = tuple(word for word in hypothesis.words if normalize_word(word.word))
