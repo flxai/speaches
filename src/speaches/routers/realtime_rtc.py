@@ -271,6 +271,7 @@ async def realtime_webrtc(
     ctx = SessionContext(
         transcription_client=transcription_client,
         completion_client=completion_client,
+        executor_registry=executor_registry,
         vad_model_manager=executor_registry.vad.model_manager,
         session=create_session_object_configuration(model, "conversation", None, None),
     )

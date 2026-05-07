@@ -3,6 +3,7 @@ from io import BytesIO
 import logging
 from typing import Literal
 
+from fastapi import HTTPException
 import openai
 
 from speaches.audio import audio_samples_from_file, resample_audio_data
@@ -111,6 +112,11 @@ async def handle_input_audio_buffer_append(ctx: SessionContext, event: InputAudi
     audio_chunk = resample_audio_data(audio_chunk, 24000, 16000)
     input_audio_buffer = ctx.audio_buffers.current
     input_audio_buffer.append(audio_chunk)
+    ctx.partial_transcriptions.ensure_started(
+        pubsub=ctx.pubsub,
+        input_audio_buffer=input_audio_buffer,
+        session=ctx.session,
+    )
     if ctx.session.turn_detection is not None:
         vad_event = vad_detection_flow(input_audio_buffer, ctx.session.turn_detection, ctx)
         if vad_event is not None:
@@ -118,7 +124,7 @@ async def handle_input_audio_buffer_append(ctx: SessionContext, event: InputAudi
             if isinstance(vad_event, InputAudioBufferSpeechStoppedEvent):
                 item_id = vad_event.item_id
                 ctx.audio_buffers.rotate()
-                await commit_and_transcribe(ctx, item_id)
+                await commit_and_transcribe(ctx, item_id, apply_vad=True)
 
 
 @event_router.register("input_audio_buffer.commit")
@@ -133,17 +139,20 @@ async def handle_input_audio_buffer_commit(ctx: SessionContext, _event: InputAud
     else:
         item_id = input_audio_buffer.id
         ctx.audio_buffers.rotate()
-        await commit_and_transcribe(ctx, item_id)
+        await commit_and_transcribe(ctx, item_id, apply_vad=False)
 
 
 @event_router.register("input_audio_buffer.clear")
-def handle_input_audio_buffer_clear(ctx: SessionContext, _event: InputAudioBufferClearEvent) -> None:
+async def handle_input_audio_buffer_clear(ctx: SessionContext, _event: InputAudioBufferClearEvent) -> None:
+    item_id = ctx.audio_buffers.current.id
     ctx.audio_buffers.clear_current()
+    await ctx.partial_transcriptions.stop(item_id)
     # OpenAI's doesn't send an error if the buffer is already empty.
     ctx.pubsub.publish_nowait(InputAudioBufferClearedEvent())
 
 
-async def commit_and_transcribe(ctx: SessionContext, item_id: str) -> None:
+async def commit_and_transcribe(ctx: SessionContext, item_id: str, *, apply_vad: bool) -> None:
+    await ctx.partial_transcriptions.stop(item_id)
     event = InputAudioBufferCommittedEvent(
         previous_item_id=next(reversed(ctx.conversation.items), None),  # FIXME
         item_id=item_id,
@@ -154,10 +163,11 @@ async def commit_and_transcribe(ctx: SessionContext, item_id: str) -> None:
 
     transcriber = InputAudioBufferTranscriber(
         pubsub=ctx.pubsub,
-        transcription_client=ctx.transcription_client,
+        audio_transcriber=ctx.audio_transcriber,
         input_audio_buffer=input_audio_buffer,
         session=ctx.session,
         conversation=ctx.conversation,
+        apply_vad=apply_vad,
     )
     transcriber.start()
     assert transcriber.task is not None
@@ -171,6 +181,18 @@ async def commit_and_transcribe(ctx: SessionContext, item_id: str) -> None:
                 message=e.message,
             )
         )
+        return
+    except HTTPException as e:
+        message = str(e.detail)
+        ctx.pubsub.publish_nowait(
+            create_invalid_request_error(message=message)
+            if e.status_code < 500
+            else create_server_error(message=message)
+        )
+        return
+    except Exception as e:
+        logger.exception("Input audio transcription failed")
+        ctx.pubsub.publish_nowait(create_server_error(message=str(e)))
         return
 
     if ctx.session.turn_detection is None or not ctx.session.turn_detection.create_response:

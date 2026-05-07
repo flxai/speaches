@@ -66,7 +66,8 @@ Speaches supports two primary operating modes, both compatible with OpenAI Realt
 2. `input_audio_buffer.speech_stopped` → User stops speaking
 3. `input_audio_buffer.committed` → Audio buffer processed  
 4. `conversation.item.created` → Conversation item created
-5. `conversation.item.input_audio_transcription.completed` → **Stops here - no response generation**
+5. `conversation.item.input_audio_transcription.delta` → Stable live transcription text, emitted while audio is still arriving
+6. `conversation.item.input_audio_transcription.completed` → **Stops here - no response generation**
 
 **Use Cases:** Live subtitles, meeting transcription, voice notes, accessibility applications
 
@@ -141,6 +142,7 @@ const ws = new WebSocket("wss://your-speaches-server/v1/realtime?model=deepdml/f
 - **URL `model` parameter**: Specifies the transcription model (not conversation model)
 - **Response generation**: Disabled (`create_response=false`)
 - **Conversation model**: Uses default `gpt-4o-realtime-preview` (unused)
+- **Live deltas**: Emits `conversation.item.input_audio_transcription.delta` with stable, append-only text before the final `completed` event
 
 #### Additional Parameters
 
@@ -195,11 +197,17 @@ const ws = new WebSocket("wss://speaches-server/v1/realtime?model=your-transcrip
 
 ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
-    if (data.type === 'conversation.item.input_audio_transcription.completed') {
+    if (data.type === 'conversation.item.input_audio_transcription.delta') {
+        process.stdout.write(data.delta);
+    } else if (data.type === 'conversation.item.input_audio_transcription.completed') {
         console.log('Transcription:', data.transcript);
     }
 };
 ```
+
+### Live Transcription Deltas
+
+Speaches emits transcription deltas over the same Realtime WebSocket that receives `input_audio_buffer.append` audio chunks. For Whisper and faster-whisper models, deltas are produced by periodically decoding the current audio buffer and committing only text that is stable across consecutive hypotheses. This keeps the delta stream append-only while preserving the final `conversation.item.input_audio_transcription.completed` transcript as the authoritative result.
 
 ## Limitations
 

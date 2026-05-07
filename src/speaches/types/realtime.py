@@ -26,6 +26,9 @@ from openai.types.realtime import (
     ConversationItemInputAudioTranscriptionCompletedEvent as OpenAIConversationItemInputAudioTranscriptionCompletedEvent,
 )
 from openai.types.realtime import (
+    ConversationItemInputAudioTranscriptionDeltaEvent as OpenAIConversationItemInputAudioTranscriptionDeltaEvent,
+)
+from openai.types.realtime import (
     ConversationItemInputAudioTranscriptionFailedEvent as OpenAIConversationItemInputAudioTranscriptionFailedEvent,
 )
 from openai.types.realtime import (
@@ -394,6 +397,14 @@ class ConversationItemInputAudioTranscriptionCompletedEvent(
     content_index: int = 0
 
 
+class ConversationItemInputAudioTranscriptionDeltaEvent(OpenAIConversationItemInputAudioTranscriptionDeltaEvent):
+    type: Literal["conversation.item.input_audio_transcription.delta"] = (
+        "conversation.item.input_audio_transcription.delta"
+    )
+    event_id: str = Field(default_factory=generate_event_id)
+    content_index: int = 0
+
+
 class ConversationItemInputAudioTranscriptionFailedEvent(OpenAIConversationItemInputAudioTranscriptionFailedEvent):
     type: Literal["conversation.item.input_audio_transcription.failed"] = (
         "conversation.item.input_audio_transcription.failed"
@@ -546,6 +557,7 @@ type ConversationServerEvent = (
     | ConversationItemAddedEvent
     | ConversationItemDoneEvent
     | ConversationItemRetrievedEvent
+    | ConversationItemInputAudioTranscriptionDeltaEvent
     | ConversationItemInputAudioTranscriptionCompletedEvent
     | ConversationItemInputAudioTranscriptionFailedEvent
     | ConversationItemTruncatedEvent
@@ -612,6 +624,7 @@ SERVER_EVENT_TYPES = {
     "conversation.item.added",
     "conversation.item.done",
     "conversation.item.retrieved",
+    "conversation.item.input_audio_transcription.delta",
     "conversation.item.input_audio_transcription.completed",
     "conversation.item.input_audio_transcription.failed",
     "conversation.item.truncated",

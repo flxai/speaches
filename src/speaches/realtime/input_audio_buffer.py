@@ -2,18 +2,15 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
-from io import BytesIO
 import logging
 import time
 from typing import TYPE_CHECKING
 
 import numpy as np
-from openai import omit
 from openai.types.realtime.conversation_item_input_audio_transcription_completed_event import (
     UsageTranscriptTextUsageDuration,
 )
 from pydantic import BaseModel
-import soundfile as sf
 
 from speaches.realtime.utils import generate_item_id, task_done_callback
 from speaches.types.realtime import (
@@ -26,10 +23,10 @@ from speaches.types.realtime import (
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
-    from openai.resources.audio import AsyncTranscriptions
 
     from speaches.realtime.conversation_event_router import Conversation
     from speaches.realtime.pubsub import EventPubSub
+    from speaches.realtime.transcription_protocol import TranscribesAudioSnapshots
 
 SAMPLE_RATE = 16000
 MS_SAMPLE_RATE = 16
@@ -87,6 +84,11 @@ class InputAudioBuffer:
                 self.vad_state.audio_start_ms * MS_SAMPLE_RATE : self.vad_state.audio_end_ms * MS_SAMPLE_RATE
             ]
 
+    def transcription_data(self, *, apply_vad: bool) -> NDArray[np.float32]:
+        if apply_vad:
+            return self.data_w_vad_applied
+        return self.data
+
 
 class InputAudioBufferManager:
     def __init__(self, pubsub: EventPubSub) -> None:
@@ -117,16 +119,18 @@ class InputAudioBufferTranscriber:
         self,
         *,
         pubsub: EventPubSub,
-        transcription_client: AsyncTranscriptions,
+        audio_transcriber: TranscribesAudioSnapshots,
         input_audio_buffer: InputAudioBuffer,
         session: Session,
         conversation: Conversation,
+        apply_vad: bool,
     ) -> None:
         self.pubsub = pubsub
-        self.transcription_client = transcription_client
+        self.audio_transcriber = audio_transcriber
         self.input_audio_buffer = input_audio_buffer
         self.session = session
         self.conversation = conversation
+        self.apply_vad = apply_vad
 
         self.task: asyncio.Task[None] | None = None
         self.events = asyncio.Queue[ServerEvent]()
@@ -141,21 +145,12 @@ class InputAudioBufferTranscriber:
         )
         self.conversation.create_item(item)
 
-        file = BytesIO()
-        sf.write(
-            file,
-            self.input_audio_buffer.data_w_vad_applied,
-            samplerate=16000,
-            subtype="PCM_16",
-            endian="LITTLE",
-            format="wav",
-        )
+        audio_data = self.input_audio_buffer.transcription_data(apply_vad=self.apply_vad)
         start = time.perf_counter()
-        transcript = await self.transcription_client.create(
-            file=file,
+        transcript = await self.audio_transcriber.transcribe(
+            audio_data,
             model=self.session.input_audio_transcription.model,
-            response_format="text",
-            language=self.session.input_audio_transcription.language or omit,
+            language=self.session.input_audio_transcription.language,
         )
         logger.info(f"Transcription generation took {time.perf_counter() - start:.2f} seconds")
         content_item.transcript = transcript
@@ -164,7 +159,7 @@ class InputAudioBufferTranscriber:
                 item_id=item.id,
                 transcript=transcript,
                 usage=UsageTranscriptTextUsageDuration(
-                    seconds=self.input_audio_buffer.duration,
+                    seconds=len(audio_data) / SAMPLE_RATE,
                     type="duration",
                 ),
             )

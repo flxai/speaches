@@ -99,18 +99,22 @@ async def realtime(
     ctx = SessionContext(
         transcription_client=transcription_client,
         completion_client=completion_client,
+        executor_registry=executor_registry,
         vad_model_manager=executor_registry.vad.model_manager,
         session=create_session_object_configuration(model, intent, language, transcription_model),
     )
     message_manager = WsServerMessageManager(ctx.pubsub)
-    async with asyncio.TaskGroup() as tg:
-        event_listener_task = tg.create_task(event_listener(ctx), name="event_listener")
-        async with asyncio.timeout(OPENAI_REALTIME_SESSION_DURATION_SECONDS):
-            mm_task = asyncio.create_task(message_manager.run(ws))
-            # HACK: a tiny delay to ensure the message_manager.run() task is started. Otherwise, the `SessionCreatedEvent` will not be sent, as it's published before the `sender` task subscribes to the pubsub.
-            await asyncio.sleep(0.001)
-            ctx.pubsub.publish_nowait(SessionCreatedEvent(session=ctx.session))
-            await mm_task
-        event_listener_task.cancel()
+    try:
+        async with asyncio.TaskGroup() as tg:
+            event_listener_task = tg.create_task(event_listener(ctx), name="event_listener")
+            async with asyncio.timeout(OPENAI_REALTIME_SESSION_DURATION_SECONDS):
+                mm_task = asyncio.create_task(message_manager.run(ws))
+                # HACK: a tiny delay to ensure the message_manager.run() task is started. Otherwise, the `SessionCreatedEvent` will not be sent, as it's published before the `sender` task subscribes to the pubsub.
+                await asyncio.sleep(0.001)
+                ctx.pubsub.publish_nowait(SessionCreatedEvent(session=ctx.session))
+                await mm_task
+            event_listener_task.cancel()
+    finally:
+        await ctx.partial_transcriptions.stop_all()
 
     logger.info(f"Finished handling '{ctx.session.id}' session")
