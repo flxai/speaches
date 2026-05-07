@@ -18,6 +18,7 @@ from speaches.types.realtime import (
     SERVER_EVENT_TYPES,
     ConversationItemInputAudioTranscriptionCompletedEvent,
     ConversationItemInputAudioTranscriptionDeltaEvent,
+    ConversationItemInputAudioTranscriptionHypothesisEvent,
     server_event_type_adapter,
 )
 
@@ -77,6 +78,24 @@ def test_transcription_delta_event_is_a_server_event() -> None:
     parsed = server_event_type_adapter.validate_python(event.model_dump())
     assert isinstance(parsed, ConversationItemInputAudioTranscriptionDeltaEvent)
     assert parsed.delta == "hello"
+
+
+def test_transcription_hypothesis_event_is_a_server_event() -> None:
+    event = ConversationItemInputAudioTranscriptionHypothesisEvent(
+        item_id="item_123",
+        transcript="the front fell",
+        confirmed_prefix="the front",
+        provisional="fell",
+        audio_start_ms=0,
+        audio_end_ms=1500,
+    )
+
+    assert "conversation.item.input_audio_transcription.hypothesis" in SERVER_EVENT_TYPES
+    parsed = server_event_type_adapter.validate_python(event.model_dump())
+    assert isinstance(parsed, ConversationItemInputAudioTranscriptionHypothesisEvent)
+    assert parsed.transcript == "the front fell"
+    assert parsed.confirmed_prefix == "the front"
+    assert parsed.provisional == "fell"
 
 
 def test_stabilizer_does_not_commit_misheard_short_prefix() -> None:
@@ -140,15 +159,90 @@ async def test_partial_worker_publishes_stable_delta_after_audio_grows() -> None
     )
     worker.start()
     await wait_for_calls(transcriber, 1)
-    assert subscriber.empty()
+    first_event = await asyncio.wait_for(subscriber.get(), timeout=1)
+    assert isinstance(first_event, ConversationItemInputAudioTranscriptionHypothesisEvent)
+    assert first_event.transcript == "the front fell"
 
     input_audio_buffer.append(np.ones(800, dtype=np.float32))
-    event = await asyncio.wait_for(subscriber.get(), timeout=1)
+    delta_event = await asyncio.wait_for(subscriber.get(), timeout=1)
+    hypothesis_event = await asyncio.wait_for(subscriber.get(), timeout=1)
     await worker.stop()
 
-    assert isinstance(event, ConversationItemInputAudioTranscriptionDeltaEvent)
-    assert event.item_id == input_audio_buffer.id
-    assert event.delta == "the front fell"
+    assert isinstance(delta_event, ConversationItemInputAudioTranscriptionDeltaEvent)
+    assert delta_event.item_id == input_audio_buffer.id
+    assert delta_event.delta == "the front fell"
+    assert isinstance(hypothesis_event, ConversationItemInputAudioTranscriptionHypothesisEvent)
+    assert hypothesis_event.item_id == input_audio_buffer.id
+    assert hypothesis_event.confirmed_prefix == "the front fell"
+    assert hypothesis_event.provisional == "off"
+    assert hypothesis_event.transcript == "the front fell off"
+
+
+@pytest.mark.asyncio
+async def test_partial_worker_hypothesis_can_retract_previous_text() -> None:
+    pubsub = EventPubSub()
+    subscriber = pubsub.subscribe()
+    session = create_session_object_configuration("test-model", intent="transcription")
+    transcriber = FakeAudioSnapshotTranscriber("hello world", "the front fell")
+    input_audio_buffer = SessionContext(
+        transcription_client=MagicMock(),
+        completion_client=MagicMock(),
+        executor_registry=MagicMock(),
+        vad_model_manager=MagicMock(),
+        session=session,
+    ).audio_buffers.current
+    input_audio_buffer.append(np.ones(1600, dtype=np.float32))
+
+    worker = RealtimePartialTranscriptionWorker(
+        pubsub=pubsub,
+        transcriber=transcriber,
+        input_audio_buffer=input_audio_buffer,
+        session=session,
+        min_duration_ms=1,
+        interval_seconds=0.01,
+    )
+    worker.start()
+    await wait_for_calls(transcriber, 1)
+    first_event = await asyncio.wait_for(subscriber.get(), timeout=1)
+    input_audio_buffer.append(np.ones(800, dtype=np.float32))
+    await wait_for_calls(transcriber, 2)
+    second_event = await asyncio.wait_for(subscriber.get(), timeout=1)
+    await worker.stop()
+
+    assert isinstance(first_event, ConversationItemInputAudioTranscriptionHypothesisEvent)
+    assert first_event.transcript == "hello world"
+    assert isinstance(second_event, ConversationItemInputAudioTranscriptionHypothesisEvent)
+    assert second_event.transcript == "the front fell"
+
+
+@pytest.mark.asyncio
+async def test_partial_worker_drops_short_silence_hallucination() -> None:
+    pubsub = EventPubSub()
+    subscriber = pubsub.subscribe()
+    session = create_session_object_configuration("test-model", intent="transcription")
+    transcriber = FakeAudioSnapshotTranscriber("hello")
+    input_audio_buffer = SessionContext(
+        transcription_client=MagicMock(),
+        completion_client=MagicMock(),
+        executor_registry=MagicMock(),
+        vad_model_manager=MagicMock(),
+        session=session,
+    ).audio_buffers.current
+    input_audio_buffer.append(np.ones(1600, dtype=np.float32))
+
+    worker = RealtimePartialTranscriptionWorker(
+        pubsub=pubsub,
+        transcriber=transcriber,
+        input_audio_buffer=input_audio_buffer,
+        session=session,
+        min_duration_ms=1,
+        interval_seconds=0.01,
+    )
+    worker.start()
+    await wait_for_calls(transcriber, 1)
+    await worker.stop()
+
+    assert subscriber.empty()
 
 
 @pytest.mark.asyncio
