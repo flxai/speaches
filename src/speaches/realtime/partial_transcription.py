@@ -5,6 +5,7 @@ from contextlib import suppress
 import logging
 from typing import TYPE_CHECKING
 
+from speaches.realtime.input_audio_buffer import MS_SAMPLE_RATE, SAMPLE_RATE
 from speaches.realtime.stabilizer import RealtimeTranscriptStabilizer
 from speaches.realtime.utils import task_done_callback
 from speaches.types.realtime import ConversationItemInputAudioTranscriptionDeltaEvent
@@ -44,6 +45,7 @@ class RealtimePartialTranscriptionWorker:
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._last_submitted_size = 0
+        self._confirmed_samples = 0
 
     @property
     def item_id(self) -> str:
@@ -70,21 +72,25 @@ class RealtimePartialTranscriptionWorker:
             except TimeoutError:
                 pass
 
-            if self.input_audio_buffer.duration_ms < self.min_duration_ms:
+            unconfirmed_samples = self.input_audio_buffer.size - self._confirmed_samples
+            if unconfirmed_samples <= 0:
+                continue
+            if unconfirmed_samples // MS_SAMPLE_RATE < self.min_duration_ms:
                 continue
             if self.input_audio_buffer.size == self._last_submitted_size:
                 continue
 
-            snapshot = self.input_audio_buffer.data.copy()
-            self._last_submitted_size = len(snapshot)
+            snapshot = self.input_audio_buffer.data[self._confirmed_samples :].copy()
+            self._last_submitted_size = self.input_audio_buffer.size
             await self._transcribe_snapshot(snapshot)
 
     async def _transcribe_snapshot(self, snapshot: np.typing.NDArray[np.float32]) -> None:
         try:
-            hypothesis = await self.transcriber.transcribe(
+            hypothesis = await self.transcriber.transcribe_timed(
                 snapshot,
                 model=self.session.input_audio_transcription.model,
                 language=self.session.input_audio_transcription.language,
+                prompt=self.stabilizer.prompt_context,
             )
         except asyncio.CancelledError:
             raise
@@ -93,9 +99,11 @@ class RealtimePartialTranscriptionWorker:
             return
 
         delta = self.stabilizer.observe(hypothesis)
-        if delta:
+        if delta is not None:
+            confirmed_samples = int(delta.confirmed_until_seconds * SAMPLE_RATE)
+            self._confirmed_samples = min(self.input_audio_buffer.size, self._confirmed_samples + confirmed_samples)
             self.pubsub.publish_nowait(
-                ConversationItemInputAudioTranscriptionDeltaEvent(item_id=self.item_id, delta=delta)
+                ConversationItemInputAudioTranscriptionDeltaEvent(item_id=self.item_id, delta=delta.text)
             )
 
 
