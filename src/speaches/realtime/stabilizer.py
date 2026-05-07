@@ -49,6 +49,10 @@ class RealtimeTranscriptStabilizer:
             self._previous_words = current_words
             return None
 
+        if len(stable_words) == len(current_words):
+            self._previous_words = current_words
+            return None
+
         stable_text = append_text(self._committed, format_words(stable_words))
         if len(stable_text) <= len(self._committed):
             self._previous_words = current_words

@@ -87,6 +87,18 @@ def test_stabilizer_does_not_commit_misheard_short_prefix() -> None:
     assert stabilizer.committed == ""
 
 
+def test_stabilizer_keeps_current_right_edge_unconfirmed() -> None:
+    stabilizer = RealtimeTranscriptStabilizer()
+
+    assert stabilizer.observe(timed_transcript("thank you")) is None
+    assert stabilizer.observe(timed_transcript("thank you")) is None
+
+    delta = stabilizer.observe(timed_transcript("thank you today"))
+
+    assert delta is not None
+    assert delta.text == "thank you"
+
+
 def test_stabilizer_emits_only_new_stable_word_prefixes() -> None:
     stabilizer = RealtimeTranscriptStabilizer()
 
