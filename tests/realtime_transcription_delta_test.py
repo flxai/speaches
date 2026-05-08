@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from typing import TypeAlias
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -23,8 +24,11 @@ from speaches.types.realtime import (
 )
 
 
+FakeHypothesis: TypeAlias = str | TimedTranscript
+
+
 class FakeAudioSnapshotTranscriber:
-    def __init__(self, *hypotheses: str) -> None:
+    def __init__(self, *hypotheses: FakeHypothesis) -> None:
         self.hypotheses = deque(hypotheses)
         self.calls: list[tuple[int, str, str | None]] = []
         self.prompts: list[str | None] = []
@@ -52,7 +56,10 @@ class FakeAudioSnapshotTranscriber:
         self.calls.append((len(audio_data), model, language))
         self.prompts.append(prompt)
         self.calls_changed.set()
-        return timed_transcript(self.hypotheses.popleft())
+        hypothesis = self.hypotheses.popleft()
+        if isinstance(hypothesis, TimedTranscript):
+            return hypothesis
+        return timed_transcript(hypothesis)
 
 
 async def wait_for_calls(transcriber: FakeAudioSnapshotTranscriber, count: int) -> None:
@@ -61,13 +68,21 @@ async def wait_for_calls(transcriber: FakeAudioSnapshotTranscriber, count: int) 
         transcriber.calls_changed.clear()
 
 
-def timed_transcript(text: str, word_duration: float = 0.1) -> TimedTranscript:
+def timed_transcript(
+    text: str,
+    word_duration: float = 0.1,
+    *,
+    no_speech_prob: float | None = None,
+    avg_logprob: float | None = None,
+) -> TimedTranscript:
     return TimedTranscript(
         text=text,
         words=tuple(
             TimedWord(word=word, start=index * word_duration, end=(index + 1) * word_duration)
             for index, word in enumerate(text.split())
         ),
+        no_speech_prob=no_speech_prob,
+        avg_logprob=avg_logprob,
     )
 
 
@@ -278,6 +293,72 @@ async def test_partial_worker_drops_short_silence_hallucination() -> None:
     await worker.stop()
 
     assert subscriber.empty()
+
+
+@pytest.mark.asyncio
+async def test_partial_worker_drops_no_speech_probability_hallucination() -> None:
+    pubsub = EventPubSub()
+    subscriber = pubsub.subscribe()
+    session = create_session_object_configuration("test-model", intent="transcription")
+    transcriber = FakeAudioSnapshotTranscriber(
+        timed_transcript("Thank you", no_speech_prob=0.92, avg_logprob=-1.4)
+    )
+    input_audio_buffer = SessionContext(
+        transcription_client=MagicMock(),
+        completion_client=MagicMock(),
+        executor_registry=MagicMock(),
+        vad_model_manager=MagicMock(),
+        session=session,
+    ).audio_buffers.current
+    input_audio_buffer.append(np.ones(1600, dtype=np.float32))
+
+    worker = RealtimePartialTranscriptionWorker(
+        pubsub=pubsub,
+        transcriber=transcriber,
+        input_audio_buffer=input_audio_buffer,
+        session=session,
+        min_duration_ms=1,
+        interval_seconds=0.01,
+    )
+    worker.start()
+    await wait_for_calls(transcriber, 1)
+    await worker.stop()
+
+    assert subscriber.empty()
+
+
+@pytest.mark.asyncio
+async def test_partial_worker_keeps_high_confidence_speech_despite_no_speech_probability() -> None:
+    pubsub = EventPubSub()
+    subscriber = pubsub.subscribe()
+    session = create_session_object_configuration("test-model", intent="transcription")
+    transcriber = FakeAudioSnapshotTranscriber(
+        timed_transcript("the front fell", no_speech_prob=0.7, avg_logprob=-0.2)
+    )
+    input_audio_buffer = SessionContext(
+        transcription_client=MagicMock(),
+        completion_client=MagicMock(),
+        executor_registry=MagicMock(),
+        vad_model_manager=MagicMock(),
+        session=session,
+    ).audio_buffers.current
+    input_audio_buffer.append(np.ones(1600, dtype=np.float32))
+
+    worker = RealtimePartialTranscriptionWorker(
+        pubsub=pubsub,
+        transcriber=transcriber,
+        input_audio_buffer=input_audio_buffer,
+        session=session,
+        min_duration_ms=1,
+        interval_seconds=0.01,
+    )
+    worker.start()
+    await wait_for_calls(transcriber, 1)
+    event = await asyncio.wait_for(subscriber.get(), timeout=1)
+    await worker.stop()
+
+    assert isinstance(event, ConversationItemInputAudioTranscriptionHypothesisEvent)
+    assert event.transcript == "the front fell"
 
 
 @pytest.mark.asyncio

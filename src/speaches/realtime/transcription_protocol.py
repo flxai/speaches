@@ -13,6 +13,8 @@ class TimedWord(BaseModel):
 class TimedTranscript(BaseModel):
     text: str
     words: tuple[TimedWord, ...]
+    no_speech_prob: float | None = None
+    avg_logprob: float | None = None
 
 
 class TranscribesAudioSnapshots(Protocol):

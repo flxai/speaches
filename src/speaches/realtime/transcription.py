@@ -132,9 +132,18 @@ def transcription_response_to_text(response: NonStreamingTranscriptionResponse) 
 def transcription_response_to_timed_transcript(response: NonStreamingTranscriptionResponse) -> TimedTranscript:
     if not isinstance(response, openai.types.audio.TranscriptionVerbose):
         raise TypeError(f"Expected verbose transcription response, got {type(response)}")
+    segments = response.segments or []
     return TimedTranscript(
         text=response.text,
         words=tuple(
             TimedWord(word=word.word, start=word.start, end=word.end) for word in (response.words or [])
+        ),
+        no_speech_prob=max(
+            (segment.no_speech_prob for segment in segments if segment.no_speech_prob is not None),
+            default=None,
+        ),
+        avg_logprob=min(
+            (segment.avg_logprob for segment in segments if segment.avg_logprob is not None),
+            default=None,
         ),
     )

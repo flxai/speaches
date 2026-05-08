@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 REALTIME_PARTIAL_MIN_DURATION_MS = 1500
 REALTIME_PARTIAL_INTERVAL_SECONDS = 0.5
 REALTIME_CONFIRMED_AUDIO_OVERLAP_SECONDS = 1.0
+REALTIME_NO_SPEECH_PROB_THRESHOLD = 0.6
+REALTIME_LOW_CONFIDENCE_LOGPROB_THRESHOLD = -1.0
 SILENCE_HALLUCINATION_PHRASES = {
     "hello",
     "hi",
@@ -231,6 +233,15 @@ def snapshot_duration_ms(snapshot: np.typing.NDArray[np.float32]) -> int:
 
 def should_drop_partial_hypothesis(hypothesis: TimedTranscript, _duration_ms: int) -> bool:
     if not hypothesis.words:
+        return True
+    if (
+        hypothesis.no_speech_prob is not None
+        and hypothesis.no_speech_prob >= REALTIME_NO_SPEECH_PROB_THRESHOLD
+        and (
+            hypothesis.avg_logprob is None
+            or hypothesis.avg_logprob <= REALTIME_LOW_CONFIDENCE_LOGPROB_THRESHOLD
+        )
+    ):
         return True
     phrase = normalized_phrase(hypothesis.text)
     return phrase in SILENCE_HALLUCINATION_PHRASES
