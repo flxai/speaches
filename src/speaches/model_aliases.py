@@ -5,7 +5,7 @@ from typing import Annotated
 
 from pydantic import BeforeValidator, Field
 
-MODEL_ID_ALIASES_PATH = Path("model_aliases.json")  # TODO: make configurable
+MODEL_ID_ALIASES_PATH = Path(__file__).with_name("model_aliases.json")
 
 
 @lru_cache
