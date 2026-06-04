@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from speaches.executors.kokoro import KokoroModelRegistry
 from speaches.executors.parakeet import NemoConformerTdtModelRegistry
+from speaches.executors.fish_speech import FishSpeechModelManager, FishSpeechModelRegistry
 from speaches.executors.piper import PiperModelRegistry
 from speaches.executors.pyannote_diarization import (
     PyannoteDiarizationModelManager,
@@ -42,6 +43,12 @@ class ExecutorRegistry:
             model_manager=ParakeetModelManager(config.stt_model_ttl, config.unstable_ort_opts),
             model_registry=parakeet_model_registry,
             task="automatic-speech-recognition",
+        )
+        self._fish_speech_executor = Executor[FishSpeechModelManager, FishSpeechModelRegistry](
+            name="fish-speech",
+            model_manager=FishSpeechModelManager(config.fish_speech),
+            model_registry=FishSpeechModelRegistry(config.fish_speech),
+            task="text-to-speech",
         )
         self._piper_executor = Executor[PiperModelManager, PiperModelRegistry](
             name="piper",
@@ -88,7 +95,10 @@ class ExecutorRegistry:
 
     @property
     def text_to_speech(self):  # noqa: ANN201
-        return (self._piper_executor, self._kokoro_executor)
+        executors = [self._piper_executor, self._kokoro_executor]
+        if self._fish_speech_executor.model_registry.enabled:
+            executors.insert(0, self._fish_speech_executor)
+        return tuple(executors)
 
     @property
     def speaker_embedding(self):  # noqa: ANN201
@@ -103,7 +113,7 @@ class ExecutorRegistry:
         return self._vad_executor
 
     def all_executors(self):  # noqa: ANN201
-        return (
+        executors = [
             self._whisper_executor,
             self._parakeet_executor,
             self._piper_executor,
@@ -111,7 +121,10 @@ class ExecutorRegistry:
             self._wespeaker_speaker_embedding_executor,
             self._pyannote_diarization_executor,
             self._vad_executor,
-        )
+        ]
+        if self._fish_speech_executor.model_registry.enabled:
+            executors.insert(2, self._fish_speech_executor)
+        return tuple(executors)
 
     def download_model_by_id(self, model_id: str) -> bool:
         for executor in self.all_executors():

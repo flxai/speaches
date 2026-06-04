@@ -37,6 +37,12 @@ class OrtOptions(BaseModel):
     """
 
 
+class FishSpeechConfig(BaseModel):
+    enabled: bool = False
+    base_url: str = "http://127.0.0.1:8080"
+    model_id: str = "fishaudio/s2-pro"
+    timeout_seconds: float = 180.0
+
 # TODO: document `alias` behaviour within the docstring
 class Config(BaseSettings):
     """Configuration for the application. Values can be set via environment variables.
@@ -122,6 +128,8 @@ class Config(BaseSettings):
     chat_completion_api_key: SecretStr = SecretStr("cant-be-empty")
 
     unstable_ort_opts: OrtOptions = OrtOptions()
+
+    fish_speech: FishSpeechConfig = FishSpeechConfig()
 
     otel_exporter_otlp_endpoint: str | None = None
     """

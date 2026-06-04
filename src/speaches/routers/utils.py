@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from speaches.executors.shared.executor import Executor
 
 from fastapi import HTTPException
+from huggingface_hub import ModelCardData
 from huggingface_hub.utils._cache_manager import _scan_cached_repo
 
 from speaches.hf_utils import (
@@ -19,9 +20,29 @@ from speaches.hf_utils import (
 )
 
 
+def get_synthetic_model_card_data(model_id: str) -> ModelCardData | None:
+    from speaches.dependencies import get_config
+
+    config = get_config()
+    if config.fish_speech.enabled and model_id == config.fish_speech.model_id:
+        return ModelCardData(
+            library_name="fish-speech",
+            pipeline_tag="text-to-speech",
+            tags=[
+                "speaches",
+                "fish-speech",
+                "text-to-speech",
+            ],
+        )
+    return None
+
+
 def get_model_card_data_or_raise(model_id: str) -> huggingface_hub.ModelCardData:
     model_repo_path = get_model_repo_path(model_id)
     if model_repo_path is None:
+        synthetic_model_card_data = get_synthetic_model_card_data(model_id)
+        if synthetic_model_card_data is not None:
+            return synthetic_model_card_data
         raise HTTPException(
             status_code=404,
             detail=f"Model '{model_id}' is not installed locally. You can download the model using `POST /v1/models`",
