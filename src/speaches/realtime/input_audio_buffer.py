@@ -79,9 +79,11 @@ class InputAudioBuffer:
         if self.vad_state.audio_start_ms is None:
             return self.data
         else:
-            assert self.vad_state.audio_end_ms is not None
+            audio_end_ms = self.vad_state.audio_end_ms
+            if audio_end_ms is None:
+                audio_end_ms = self.duration_ms
             return self.data[
-                self.vad_state.audio_start_ms * MS_SAMPLE_RATE : self.vad_state.audio_end_ms * MS_SAMPLE_RATE
+                self.vad_state.audio_start_ms * MS_SAMPLE_RATE : audio_end_ms * MS_SAMPLE_RATE
             ]
 
     def transcription_data(self, *, apply_vad: bool) -> NDArray[np.float32]:
