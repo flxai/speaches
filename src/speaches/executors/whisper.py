@@ -158,6 +158,8 @@ class WhisperModelManager(BaseModelManager[WhisperModel]):
                 request.speech_segments,
                 request.vad_options,
             )
+            if not clip_timestamps:
+                clip_timestamps = [{"start": 0.0, "end": request.audio.duration}]
             segments, transcription_info = whisper_model.transcribe(
                 request.audio.data,
                 task="transcribe",
@@ -197,6 +199,8 @@ class WhisperModelManager(BaseModelManager[WhisperModel]):
                 request.speech_segments,
                 request.vad_options,
             )
+            if not clip_timestamps:
+                clip_timestamps = [{"start": 0.0, "end": request.audio.duration}]
             segments, _transcription_info = whisper_model.transcribe(
                 request.audio.data,
                 task="transcribe",

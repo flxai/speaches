@@ -5,13 +5,14 @@ from pathlib import Path
 import time
 from typing import TYPE_CHECKING, TypedDict
 
+from faster_whisper.vad import SileroVADModel as FasterWhisperSileroVADModel
 from faster_whisper.utils import get_assets_path
 import numpy as np
 from opentelemetry import trace
 from pydantic import BaseModel
 
 from speaches.api_types import Model
-from speaches.executors.shared.base_model_manager import BaseModelManager, get_ort_providers_with_options
+from speaches.executors.shared.base_model_manager import BaseModelManager
 from speaches.hf_utils import HfModelFilter
 from speaches.model_registry import ModelRegistry
 from speaches.tracing import traced
@@ -71,30 +72,12 @@ class SpeechTimestamp(BaseModel):
 
 
 class SileroVADModelFiles(BaseModel):
-    encoder: Path
-    decoder: Path
+    model: Path
 
 
 class SileroVADModel:
-    def __init__(self, encoder_path: Path, decoder_path: Path, providers: list[tuple[str, dict]]) -> None:
-        import onnxruntime
-
-        opts = onnxruntime.SessionOptions()
-        # opts.inter_op_num_threads = 1
-        # opts.intra_op_num_threads = 1
-        # opts.enable_cpu_mem_arena = False
-        # opts.log_severity_level = 4
-
-        self.encoder_session = onnxruntime.InferenceSession(
-            encoder_path,
-            providers=providers,
-            sess_options=opts,
-        )
-        self.decoder_session = onnxruntime.InferenceSession(
-            decoder_path,
-            providers=providers,
-            sess_options=opts,
-        )
+    def __init__(self, model_path: Path) -> None:
+        self.model = FasterWhisperSileroVADModel(str(model_path))
 
     def __call__(
         self, audio: np.ndarray, num_samples: int = 512, context_size_samples: int = 64
@@ -103,38 +86,12 @@ class SileroVADModel:
         assert audio.ndim == 2, "Input should be a 2D array with size (batch_size, num_samples)"
         assert audio.shape[1] % num_samples == 0, "Input size should be a multiple of num_samples"
 
-        batch_size = audio.shape[0]
+        outputs = [
+            np.asarray(self.model(row, num_samples=num_samples, context_size_samples=context_size_samples)).reshape(-1)
+            for row in audio
+        ]
 
-        state = np.zeros((2, batch_size, 128), dtype=np.float32)
-        context = np.zeros(
-            (batch_size, context_size_samples),
-            dtype=np.float32,
-        )
-
-        batched_audio = audio.reshape(batch_size, -1, num_samples)
-        context = batched_audio[..., -context_size_samples:]
-        context[:, -1] = 0
-        context = np.roll(context, 1, 1)
-        batched_audio = np.concatenate([context, batched_audio], 2)
-
-        batched_audio = batched_audio.reshape(-1, num_samples + context_size_samples)
-
-        encoder_batch_size = 10000
-        num_segments = batched_audio.shape[0]
-        encoder_outputs = []
-        for i in range(0, num_segments, encoder_batch_size):
-            encoder_output = self.encoder_session.run(None, {"input": batched_audio[i : i + encoder_batch_size]})[0]
-            encoder_outputs.append(encoder_output)
-
-        encoder_output = np.concatenate(encoder_outputs, axis=0)
-        encoder_output = encoder_output.reshape(batch_size, -1, 128)
-
-        decoder_outputs = []
-        for window in np.split(encoder_output, encoder_output.shape[1], axis=1):
-            out, state = self.decoder_session.run(None, {"input": window.squeeze(1), "state": state})
-            decoder_outputs.append(out)
-
-        out = np.stack(decoder_outputs, axis=1).squeeze(-1)
+        out = np.stack(outputs, axis=0).astype(np.float32, copy=False)
         logger.debug(f"VAD model inference took {time.perf_counter() - timelog_start_1:.4f}s")
         return out
 
@@ -145,20 +102,19 @@ class SileroVADModelRegistry(ModelRegistry):
         yield  # pyright: ignore[reportUnreachable]
 
     def list_local_models(self) -> Generator[Model]:
-        encoder_path = Path(get_assets_path()) / "silero_encoder_v5.onnx"
-        if encoder_path.exists():
+        model_path = Path(get_assets_path()) / "silero_vad_v6.onnx"
+        if model_path.exists():
             yield Model(
                 id=MODEL_ID,
-                created=int(encoder_path.stat().st_mtime),
+                created=int(model_path.stat().st_mtime),
                 owned_by="snakers4",
                 task="voice-activity-detection",
             )
 
     def get_model_files(self, model_id: str) -> SileroVADModelFiles:
         assert model_id == MODEL_ID, f"Only '{MODEL_ID}' model is supported"
-        encoder_path = Path(get_assets_path()) / "silero_encoder_v5.onnx"
-        decoder_path = Path(get_assets_path()) / "silero_decoder_v5.onnx"
-        return SileroVADModelFiles(encoder=encoder_path, decoder=decoder_path)
+        model_path = Path(get_assets_path()) / "silero_vad_v6.onnx"
+        return SileroVADModelFiles(model=model_path)
 
 
 silero_vad_model_registry = SileroVADModelRegistry(
@@ -173,8 +129,7 @@ class SileroVADModelManager(BaseModelManager[SileroVADModel]):
 
     def _load_fn(self, model_id: str) -> SileroVADModel:
         model_files = silero_vad_model_registry.get_model_files(model_id)
-        providers = get_ort_providers_with_options(self.ort_opts)
-        return SileroVADModel(model_files.encoder, model_files.decoder, providers)
+        return SileroVADModel(model_files.model)
 
     @traced()
     def handle_vad_request(self, request: VadRequest, **_kwargs) -> list[SpeechTimestamp]:
@@ -313,9 +268,8 @@ def to_ms_speech_timestamps(speech_timestamps: list[SpeechTimestamp]) -> list[Sp
 
 
 class MergedSegment(TypedDict):
-    start: int
-    end: int
-    segments: list[tuple[int, int]]
+    start: float
+    end: float
 
 
 def merge_segments(
@@ -345,9 +299,8 @@ def merge_segments(
         if seg.end - curr_start > chunk_length and curr_end - curr_start > 0:
             merged_segments.append(
                 {
-                    "start": curr_start,
-                    "end": curr_end,
-                    "segments": seg_idxs,
+                    "start": curr_start / sampling_rate,
+                    "end": curr_end / sampling_rate,
                 }
             )
             curr_start = seg.start
@@ -357,9 +310,8 @@ def merge_segments(
     # add final
     merged_segments.append(
         {
-            "start": curr_start,
-            "end": curr_end,
-            "segments": seg_idxs,
+            "start": curr_start / sampling_rate,
+            "end": curr_end / sampling_rate,
         }
     )
     return merged_segments
