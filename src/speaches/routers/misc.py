@@ -26,7 +26,16 @@ class RunningModelsResponse(BaseModel):
 
 @public_router.get("/health", tags=["diagnostic"])
 def health() -> JSONResponse:
-    return JSONResponse(status_code=200, content={"message": "OK"})
+    return JSONResponse(
+        status_code=200,
+        content={
+            "message": "OK",
+            "capabilities": {
+                "realtime_transcription_deltas": True,
+                "diarized_ass_transcriptions": True,
+            },
+        },
+    )
 
 
 @router.get("/api/ps", tags=["experimental"], summary="Get a list of loaded models.")

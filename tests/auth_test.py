@@ -28,7 +28,8 @@ async def test_health_endpoint_public_without_auth(aclient_without_auth: AsyncCl
     """Test that /health endpoint is accessible without authentication when auth is disabled."""
     response = await aclient_without_auth.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"message": "OK"}
+    assert response.json()["message"] == "OK"
+    assert response.json()["capabilities"]["diarized_ass_transcriptions"] is True
 
 
 @pytest.mark.asyncio
@@ -36,7 +37,8 @@ async def test_health_endpoint_public_with_auth_enabled(aclient_with_auth: Async
     """Test that /health endpoint is accessible without authentication even when auth is enabled."""
     response = await aclient_with_auth.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"message": "OK"}
+    assert response.json()["message"] == "OK"
+    assert response.json()["capabilities"]["diarized_ass_transcriptions"] is True
 
 
 @pytest.mark.asyncio

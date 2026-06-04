@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from speaches.routers.diarization import DiarizationResponse
+from speaches.diarization import DiarizationResponse
 
 DIARIZATION_MODEL_ID = "pyannote/speaker-diarization-community-1"
 ENDPOINT = "/v1/audio/diarization"

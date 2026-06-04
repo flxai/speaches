@@ -7,12 +7,11 @@ from fastapi.responses import JSONResponse
 import numpy as np
 from pyannote.audio.core.pipeline import Pipeline
 from pyannote.audio.pipelines.speaker_diarization import DiarizeOutput
-from pydantic import BaseModel
 import torch
 
 from speaches.audio import Audio
 from speaches.dependencies import AudioFileDependency, ExecutorRegistryDependency
-from speaches.diarization import KnownSpeaker
+from speaches.diarization import DiarizationResponse, DiarizationSegment, KnownSpeaker
 from speaches.model_aliases import ModelId
 from speaches.routers.utils import find_executor_for_model_or_raise, get_model_card_data_or_raise
 from speaches.utils import parse_data_url_to_audio
@@ -23,22 +22,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-class DiarizationSegment(BaseModel):
-    start: float
-    """Start timestamp of the segment in seconds."""
-    end: float
-    """End timestamp of the segment in seconds."""
-    speaker: str
-    """Speaker label for this segment. When known speakers are provided, the label matches the known speaker name. Otherwise speakers are labeled as SPEAKER_00, SPEAKER_01, etc."""
-
-
-class DiarizationResponse(BaseModel):
-    duration: float
-    """Duration of the input audio in seconds."""
-    segments: list[DiarizationSegment]
-    """Diarization segments annotated with timestamps and speaker labels."""
 
 
 def _map_to_known_speakers(

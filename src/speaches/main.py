@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import logging
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 import uuid
 
@@ -28,6 +29,9 @@ from speaches.routers.chat import (
 )
 from speaches.routers.diarization import (
     router as diarization_router,
+)
+from speaches.routers.diarized_transcription import (
+    router as diarized_transcription_router,
 )
 from speaches.routers.misc import (
     public_router as misc_public_router,
@@ -171,12 +175,13 @@ def create_app() -> FastAPI:
     app.include_router(speech_embedding_router, dependencies=http_dependencies)
     app.include_router(vad_router, dependencies=http_dependencies)
     app.include_router(diarization_router, dependencies=http_dependencies)
+    app.include_router(diarized_transcription_router, dependencies=http_dependencies)
 
     # WebSocket router WITHOUT authentication (handles its own)
     app.include_router(realtime_ws_router)
 
     realtime_console_dist = "realtime-console/dist"
-    if os.path.isdir(realtime_console_dist):
+    if Path(realtime_console_dist).is_dir():
         # HACK: move this elsewhere
         app.get("/v1/realtime", include_in_schema=False)(lambda: RedirectResponse(url="/v1/realtime/"))
         app.mount("/v1/realtime", StaticFiles(directory=realtime_console_dist, html=True))
