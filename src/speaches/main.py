@@ -175,9 +175,11 @@ def create_app() -> FastAPI:
     # WebSocket router WITHOUT authentication (handles its own)
     app.include_router(realtime_ws_router)
 
-    # HACK: move this elsewhere
-    app.get("/v1/realtime", include_in_schema=False)(lambda: RedirectResponse(url="/v1/realtime/"))
-    app.mount("/v1/realtime", StaticFiles(directory="realtime-console/dist", html=True))
+    realtime_console_dist = "realtime-console/dist"
+    if os.path.isdir(realtime_console_dist):
+        # HACK: move this elsewhere
+        app.get("/v1/realtime", include_in_schema=False)(lambda: RedirectResponse(url="/v1/realtime/"))
+        app.mount("/v1/realtime", StaticFiles(directory=realtime_console_dist, html=True))
 
     if config.allow_origins is not None:
         app.add_middleware(
