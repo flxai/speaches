@@ -21,6 +21,17 @@ class WhisperConfig(BaseModel):
     num_workers: int = 1
 
 
+class WhisperXConfig(BaseModel):
+    """Settings for the WhisperX-backed diarized transcription pipeline."""
+
+    inference_device: Device = "auto"
+    compute_type: Quantization = "default"
+    cpu_threads: int = 0
+    batch_size: int = 16
+    align_model: str | None = None
+    """Override the wav2vec2 alignment model. When None, WhisperX picks the default for the detected language."""
+
+
 class OrtOptions(BaseModel):
     exclude_providers: list[str] = ["TensorrtExecutionProvider"]
     """
@@ -104,6 +115,8 @@ class Config(BaseSettings):
     """
 
     whisper: WhisperConfig = WhisperConfig()
+
+    whisperx: WhisperXConfig = WhisperXConfig()
 
     # TODO: remove the underscore prefix from the field name
     _unstable_vad_filter: bool = True

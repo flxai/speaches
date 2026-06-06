@@ -28,6 +28,7 @@ from speaches.executors.wespeaker_speaker_embedding import (
     wespeaker_speaker_embedding_model_registry,
 )
 from speaches.executors.whisper import WhisperModelManager, whisper_model_registry
+from speaches.executors.whisperx import WhisperXModelManager
 
 
 class ExecutorRegistry:
@@ -38,6 +39,10 @@ class ExecutorRegistry:
             model_registry=whisper_model_registry,
             task="automatic-speech-recognition",
         )
+        # WhisperX runs the diarized-transcription pipeline (transcribe + align +
+        # diarize). It is not a registry-backed Executor because it composes its
+        # own ASR/align/diarization models rather than serving one HF model id.
+        self._whisperx_manager = WhisperXModelManager(config.stt_model_ttl, config.whisperx)
         self._parakeet_executor = Executor[ParakeetModelManager, NemoConformerTdtModelRegistry](
             name="parakeet",
             model_manager=ParakeetModelManager(config.stt_model_ttl, config.unstable_ort_opts),
@@ -107,6 +112,10 @@ class ExecutorRegistry:
     @property
     def diarization(self):  # noqa: ANN201
         return (self._pyannote_diarization_executor,)
+
+    @property
+    def whisperx(self) -> WhisperXModelManager:
+        return self._whisperx_manager
 
     @property
     def vad(self):  # noqa: ANN201
